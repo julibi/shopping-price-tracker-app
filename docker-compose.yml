@@ -1,0 +1,22 @@
+version: '3.1'
+
+services:
+  flask:
+    build: .
+    ports:
+      - "5000"
+    environment:
+      - DATABASE_URI=mysql+pymysql://username:password@db/databasename
+    depends_on:
+      - db
+
+  db:
+    platform: linux/x86_64
+    image: mysql:5.7
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: databasename
+      MYSQL_USER: username
+      MYSQL_PASSWORD: password
+    ports:
+      - "3306:3306"

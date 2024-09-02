@@ -1,80 +1,43 @@
-import json
-import re
-import requests
+import httpx
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from bs4 import BeautifulSoup
-from flask import Flask, request, jsonify, Response
-from functools import wraps
+import re
 
-# from selenium import webdriver
-# from selenium.webdriver.chrome.service import Service
-# from selenium.webdriver.common.by import By
-# from selenium.webdriver.chrome.options import Options
+app = FastAPI()
 
-app = Flask(__name__)
+class UrlRequest(BaseModel):
+    url: str
 
-@app.route('/')
+async def validate_url(url: str):  
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            if response.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"URL returned status code {response.status_code}")
+            else:
+                return response
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=400, detail=f"URL validation failed: {e}")
+
+@app.get('/')
 def home():
     print("hello test")
     return "Hello, Flask!"
 
-def validate_url(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        url = request.json.get('url')
-        response = requests.get(url)
-        
-        if not url:
-            return jsonify({"error": "No URL provided"}), 400
-        
-        if response.status_code != 200:
-            raise requests.exceptions.RequestException(f"Failed to retrieve the page, status code: {response.status_code}")
-        
-        # TODOS:
-        # check robots.txt
-        # check if url is safe?
-        
-        return f(*args, **kwargs)  # Call the original function with all its arguments
-    
-    return decorated_function
+@app.post("/crawl")
+async def crawl(url_request: UrlRequest):
 
-@app.route('/crawl', methods=['POST'])
-@validate_url
-def crawl():
-    try:
-        # TODOs:
+    # TODOs:
         # check if url was already posted
         # sometimes returns EURO, sometimes €
         # currency and price being string, sometimes tho html, makes code ugly
         # unify price format, 165.00 or 165,00 and then what about big numbers?
-        # refactoring idea: first check what website this is from, then scrape accordingly - create multiple scrapers
+        # refactoring idea: first check what website this is from, then scrape accordingly - create multiple scrapers   
 
-        # Step 1: Fetch the webpage content
-        url = request.json.get('url')
-        response = requests.get(url)
-        
-        if response.status_code != 200:
-            raise requests.exceptions.RequestException(f"Failed to retrieve the page, status code: {response.status_code}")
-
-        #  # Setup Selenium WebDriver with Chrome
-        # chrome_options = Options()
-        # chrome_options.add_argument("--headless")  # Run Chrome in headless mode (without GUI)
-        # chrome_options.add_argument("--no-sandbox")
-        # chrome_options.add_argument("--disable-dev-shm-usage")
-
-        # # Specify the path to ChromeDriver
-        # service = Service('/Applications/chromedriver')
-
-        # # Initialize WebDriver
-        # driver = webdriver.Chrome(service=service, options=chrome_options)
-
-        # # Navigate to the URL
-        # driver.get(url)
-
-        # # Get the page source after JavaScript execution
-        # html = driver.page_source
-
-        # # Quit the driver
-        # driver.quit()
+    try:
+        # Step 1: Fetch the webpage content (and validate the URL)
+        response = await validate_url(url_request.url)
 
         # Step 2: Make soup
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -83,10 +46,10 @@ def crawl():
         product_name = soup.find('meta', property='og:title').get('content') if soup.find('meta', property='og:title') else None
 
         # Step 4: find price
-        print('searching price with property')
+        print('searching price with meta attribute property')
         price_tag = soup.find('meta', attrs={'property': re.compile(r'price', re.IGNORECASE)})
         if not price_tag:
-            print('searching price with itemprop')
+            print('searching price with meta attribute itemprop')
             price_tag = soup.find('meta', attrs={'itemprop': re.compile(r'price', re.IGNORECASE)})
         if not price_tag:
             print('searching price with classname containing price: ')
@@ -94,12 +57,14 @@ def crawl():
             if len(price_elements) > 0:
                 price_tag = price_elements[0]
         if not price_tag:
-            print('searching price inside og:description')
+            print('searching price inside meta og:description')
             meta_tag = soup.find('meta', {'property': 'og:description'})
             content = meta_tag.get('content', '')
             # Use a regular expression to find the first price (e.g., numbers followed by a comma/period and another number, then a currency symbol)
             price_pattern = r'\d{1,3}(?:[.,]\d{2})?\s?(&nbsp;|\s)?€'
             match = re.search(price_pattern, content)
+        if not price_tag:
+            print('searching price inside og:description')
 
             # Print the first price found
             if match:
@@ -115,7 +80,7 @@ def crawl():
         
         # cleanse price string
         price = re.sub(r'[^\d,\.]', '', price)
-        
+
         # Step 5: find currency
         currency_tag = soup.find('meta', attrs={'property': re.compile(r'currency', re.IGNORECASE)})
 
@@ -147,27 +112,26 @@ def crawl():
         # Define the response data based on the condition
         if product_name:
             response_data = {
-                "url": url,
+                "url": url_request.url,
                 "product_name": product_name,
                 "price": price,
                 "currency": currency
             }
         else:
             response_data = {
-                "url": url,
+                "url": url_request.url,
                 "response": "No product found"
             }
 
         # Return the JSON response, ensuring the non-ASCII characters like '€' are preserved
-        return Response(json.dumps(response_data, ensure_ascii=False), content_type='application/json')
-
+        return response_data
+    
     except ValueError as ve:
-        return jsonify({"error": str(ve)}), 400
+        # Handle ValueError and return a 400 response
+        raise HTTPException(status_code=400, detail=str(ve))
+    except httpx.RequestError as e:
+        # Handle requests exceptions and return a 500 response
+        raise HTTPException(status_code=500, detail=str(e))
 
-    except requests.exceptions.RequestException as e:
-        return jsonify({"error": str(e)}), 500
-
-if __name__ == '__main__':
-    app.run(debug=True)
 
 
