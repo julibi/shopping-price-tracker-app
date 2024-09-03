@@ -1,30 +1,40 @@
 import httpx
+import re
+import asyncio
+from bs4 import BeautifulSoup
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
-from bs4 import BeautifulSoup
-import re
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 from items import models, schemas
-from items.database import SessionLocal, engine
+from items.database import Base, SessionLocal, engine
 
     # TODOs:
+        # an api that can only be called internally by another endpoint
+        # check for discounts
+        # cronjob
+        # migrations -> Alembic
+        # docker
         # check if url was already posted
         # sometimes returns EURO, sometimes €
         # currency and price being string, sometimes tho html, makes code ugly
         # unify price format, 165.00 or 165,00 and then what about big numbers?
         # refactoring idea: first check what website this is from, then scrape accordingly - create multiple scrapers   
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 app = FastAPI()
 
-models.Base.metadata.create_all(engine)
+# Dependency
+async def get_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        db = SessionLocal()
+        try:
+            yield db
+        finally:
+            await db.close()
+
 
 class UrlRequest(BaseModel):
     url: str
@@ -172,25 +182,42 @@ async def check_for_discount(item: schemas.Item):
         # Handle requests exceptions and return a 500 response
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/shopping-items")
-def create_shopping_item(request: schemas.ItemCreate, db: Session = Depends(get_db)):
-    # Check if the item already exists
-    # existing_item = db.query(models.Item).filter(Item.url == ItemCreate.url).first()
-    # if existing_item:
-    #     raise HTTPException(status_code=400, detail="Item already exists")
+@app.post("/items")
+async def create_item(request: schemas.ItemCreate, db: AsyncSession = Depends(get_db)):
+    try:
+        async with db.begin():  # Manage transactions
+            # Step 0: Check if the item already exists
+            query = select(models.Item).filter(models.Item.url == request.url)
+            result = await db.execute(query)
+            existing_item = result.scalars().first()
+
+            if existing_item:
+                raise HTTPException(status_code=400, detail="Item already exists")
+
+            # Step 1: Create new item
+            new_item = models.Item(
+                url=request.url,
+                product_name=request.product_name,
+                price=request.price,
+                currency=request.currency
+            )
+            db.add(new_item)
+            await db.commit()  # Commit the transaction
+
+            # Refreshing the item after commit is usually not necessary
+            # await db.refresh(new_item)
+
+            return new_item
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     
-    # Create new item
-    new_item = models.Item(url=request.url, product_name=request.product_name, price=request.price, currency=request.currency)
-    print(new_item, db)
-    db.add(new_item)
-    db.commit()
-    db.refresh(new_item)
-    # Log all items for debugging
-    all_items = db.query(models.Item).all()
-    print(f"All items in the database: {all_items}")
-
-    return new_item
-
-    
-
-
+@app.delete("/items", status_code=204)
+async def delete_all_items(db: AsyncSession = Depends(get_db)):
+    try:
+        async with db.begin():
+            # Step 1: Delete all items from the table
+            await db.execute(models.Item.__table__.delete())
+            await db.commit()  # Commit the transaction to apply the changes
+        return {"detail": "All items deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

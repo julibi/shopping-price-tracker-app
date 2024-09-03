@@ -1,12 +1,13 @@
 from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
 
 class Item(Base):
     __tablename__ = "items"
 
-    id = Column(Integer, primary_key=True)
-    url = Column(String, index=True)
-    product_name = Column(String, index=True)
-    price = Column(String, index=True)
-    currency = Column(String, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    url: Mapped[str] = mapped_column(String, unique=True)
+    product_name: Mapped[str] = mapped_column(String, unique=True)
+    price: Mapped[str] = mapped_column(String, index=True)
+    currency: Mapped[str] = mapped_column(String, index=True)
