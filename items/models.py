@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String
+from datetime import datetime, timezone
+from sqlalchemy import Column, Integer, String, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -11,3 +12,5 @@ class Item(Base):
     product_name: Mapped[str] = mapped_column(String, unique=True)
     price: Mapped[str] = mapped_column(String, index=True)
     currency: Mapped[str] = mapped_column(String, index=True)
+    last_updated: datetime = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)  # Use timezone-aware datetime
+

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 import os
 import httpx
@@ -210,7 +211,8 @@ async def create_item(request: schemas.ItemCreate, db: AsyncSession = Depends(ge
                 url=request.url,
                 product_name=request.product_name,
                 price=request.price,
-                currency=request.currency
+                currency=request.currency,
+                last_updated=datetime.now(timezone.utc) 
             )
             db.add(new_item)
             await db.commit()  # Commit the transaction
