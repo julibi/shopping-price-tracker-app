@@ -1,13 +1,17 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import os
 import httpx
-import re
+import asyncio
+import re 
+from decimal import Decimal, InvalidOperation
 from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
 from bs4 import BeautifulSoup
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 from items import models, schemas
 from items.database import Base, SessionLocal, engine
@@ -17,10 +21,17 @@ load_dotenv()
     # TODOs:
         # call /items endpoint from /crawl endpoint DONE
         # protect endpoint DONE
-        # migrations -> Alembic DOING
-        # check for discounts TODO
-        # cronjob TODO
+        # migrations -> Alembic DONE
+        # cronjob DONE
+        # check for discounts DOING
+            # find older that 24h DONE
+            # migration for price DOING
+            # check for discount
+            # add a discrount price
+            # remove a discount price
+        # response = await client.post("http://localhost:8000/items" -> make it dynamic
         # docker
+        # FE integration, how to notify people
         # check if url was already posted
         # sometimes returns EURO, sometimes €
         # currency and price being string, sometimes tho html, makes code ugly
@@ -29,7 +40,8 @@ load_dotenv()
 
 app = FastAPI()
 
-# Dependency
+# DB Session Dependency
+
 async def get_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -39,11 +51,32 @@ async def get_db():
         finally:
             await db.close()
 
+# scheduler setup
+
+scheduler = BackgroundScheduler()
+
+def run_check_for_price_changes():
+    asyncio.run(check_for_price_changes())
+
+@app.on_event("startup")
+async def start_scheduler():
+    scheduler.add_job(run_check_for_price_changes, IntervalTrigger(seconds=2))
+    scheduler.start()
+
+@app.on_event("shutdown")
+def shutdown_scheduler():
+    scheduler.shutdown()
+
+# classes
 
 class UrlRequest(BaseModel):
     url: str
 
+# constants
+
 INTERNAL_TOKEN = os.getenv("SECRET_TOKEN_PROTECTED_ROUTE")
+
+# helper functions
 
 async def validate_url(url: str):  
     try:
@@ -59,6 +92,34 @@ async def validate_url(url: str):
 def verify_internal_request(internal_authorization: str = Header(None)):
     if internal_authorization != INTERNAL_TOKEN:
         raise HTTPException(status_code=403, detail="Not authorized")
+
+# we want no thousand separators and we want a dot as a decimal separator
+def sanitize_price_string(price_str: str) -> float:
+    #  Find the last occurrence of comma or dot, followed by exactly two digits
+    match = re.search(r'[,.](\d{2})$', price_str)
+    
+    if match:
+        # If a match is found, it means we have a decimal separator
+        decimal_part = match.group(1)  # The two digits following the separator
+        
+        # Clean the integer part by removing all non-digit characters
+        integer_part = re.sub(r'[^\d]', '', price_str[:match.start()])
+        
+        # decimal separator is always a dot
+        sanitized_price = f"{integer_part}.{decimal_part}"
+    else:
+        # If no match is found, it means there is no valid decimal part, so remove all commas and dots
+        sanitized_price = re.sub(r'[^\d]', '', price_str) + ".00"  # Append .00 for whole numbers
+
+    # Convert to float
+    try:
+        return float(sanitized_price)
+    except ValueError:
+        raise ValueError(f"Cannot convert {price_str} to a valid float number")
+
+
+
+# routes
 
 @app.post("/crawl")
 async def crawl(url_request: UrlRequest):
@@ -161,7 +222,38 @@ async def crawl(url_request: UrlRequest):
     except httpx.RequestError as e:
         # Handle requests exceptions and return a 500 response
         raise HTTPException(status_code=500, detail=str(e))
+
+async def check_for_price_changes(db: AsyncSession = Depends(get_db)):
+    print("Running price change check...")
+
+    async with SessionLocal() as db:  
     
+        # Get the current time and calculate the time 24 hours ago
+        now = datetime.now(timezone.utc)
+        twenty_four_hours_ago = now - timedelta(hours=24)
+
+        # Query the database for items where last_updated is older than 24 hours
+        query = select(models.Item).where(models.Item.last_updated < twenty_four_hours_ago)
+        result = await db.execute(query)
+        items = result.scalars().all()
+
+        for item in items:
+            print(f"Checking item: {item.product_name}")
+
+            current_price = item.price
+
+            # If the price has changed, update the discount_price
+            if current_price != item.price:
+                print(f"Price change detected for {item.product_name}: Old Price = {item.price}, New Price = {current_price}")
+                item.discount_price = current_price
+                item.last_updated = now
+
+                # Add the updated item back to the session
+                db.add(item)
+
+        # Commit changes to the database
+        await db.commit()
+
 @app.get("/check-for-discount")
 async def check_for_discount(item: schemas.Item):
 
