@@ -1,21 +1,24 @@
+from dotenv import load_dotenv
+import os
 import httpx
 import re
-import asyncio
-from bs4 import BeautifulSoup
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
+from bs4 import BeautifulSoup
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from items import models, schemas
 from items.database import Base, SessionLocal, engine
 
+load_dotenv()
+
     # TODOs:
-        # an api that can only be called internally by another endpoint
-        # check for discounts
-        # cronjob
-        # migrations -> Alembic
+        # call /items endpoint from /crawl endpoint DONE
+        # protect endpoint DONE
+        # migrations -> Alembic DOING
+        # check for discounts TODO
+        # cronjob TODO
         # docker
         # check if url was already posted
         # sometimes returns EURO, sometimes €
@@ -39,6 +42,8 @@ async def get_db():
 class UrlRequest(BaseModel):
     url: str
 
+INTERNAL_TOKEN = os.getenv("SECRET_TOKEN_PROTECTED_ROUTE")
+
 async def validate_url(url: str):  
     try:
         async with httpx.AsyncClient() as client:
@@ -49,6 +54,10 @@ async def validate_url(url: str):
                 return response
     except httpx.RequestError as e:
         raise HTTPException(status_code=400, detail=f"URL validation failed: {e}")
+
+def verify_internal_request(internal_authorization: str = Header(None)):
+    if internal_authorization != INTERNAL_TOKEN:
+        raise HTTPException(status_code=403, detail="Not authorized")
 
 @app.post("/crawl")
 async def crawl(url_request: UrlRequest):
@@ -128,20 +137,22 @@ async def crawl(url_request: UrlRequest):
 
         # Define the response data based on the condition
         if product_name:
-            response_data = {
-                "url": url_request.url,
-                "product_name": product_name,
-                "price": price,
-                "currency": currency,
-            }
+            async with httpx.AsyncClient() as client:
+                post_data = {
+                    "url": url_request.url,
+                    "product_name": product_name,
+                    "price": price,
+                    "currency": currency,
+                }
+                headers = {"Internal-Authorization": INTERNAL_TOKEN}
+                response = await client.post("http://localhost:8000/items", json=post_data, headers=headers)
+                return response.json()
         else:
             response_data = {
                 "url": url_request.url,
                 "response": "No product found"
             }
-
-        # Return the JSON response, ensuring the non-ASCII characters like '€' are preserved
-        return response_data
+            return response_data
     
     except ValueError as ve:
         # Handle ValueError and return a 400 response
@@ -183,7 +194,7 @@ async def check_for_discount(item: schemas.Item):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/items")
-async def create_item(request: schemas.ItemCreate, db: AsyncSession = Depends(get_db)):
+async def create_item(request: schemas.ItemCreate, db: AsyncSession = Depends(get_db), authorized: str = Depends(verify_internal_request)):
     try:
         async with db.begin():  # Manage transactions
             # Step 0: Check if the item already exists
@@ -210,7 +221,8 @@ async def create_item(request: schemas.ItemCreate, db: AsyncSession = Depends(ge
             return new_item
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+# just for development
 @app.delete("/items", status_code=204)
 async def delete_all_items(db: AsyncSession = Depends(get_db)):
     try:
