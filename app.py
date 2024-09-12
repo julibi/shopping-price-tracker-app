@@ -1,4 +1,5 @@
 from datetime import datetime, timezone, timedelta
+from typing import List
 from dotenv import load_dotenv
 import os
 import httpx
@@ -19,17 +20,11 @@ from items.database import Base, SessionLocal, engine
 load_dotenv()
 
     # TODOs:
-        # call /items endpoint from /crawl endpoint DONE
-        # protect endpoint DONE
-        # migrations -> Alembic DONE
-        # cronjob DONE
         # check for discounts DOING
-            # find older that 24h DONE
-            # migration for price DOING
             # check for discount
             # add a discrount price
             # remove a discount price
-        # response = await client.post("http://localhost:8000/items" -> make it dynamic
+        # response = await client.post("http://localhost:8000/items" -> how to call this without hardcoding localhost?
         # docker
         # FE integration, how to notify people
         # check if url was already posted
@@ -60,7 +55,7 @@ def run_check_for_price_changes():
 
 @app.on_event("startup")
 async def start_scheduler():
-    scheduler.add_job(run_check_for_price_changes, IntervalTrigger(seconds=2))
+    scheduler.add_job(run_check_for_price_changes, IntervalTrigger(seconds=120))
     scheduler.start()
 
 @app.on_event("shutdown")
@@ -117,9 +112,15 @@ def sanitize_price_string(price_str: str) -> float:
     except ValueError:
         raise ValueError(f"Cannot convert {price_str} to a valid float number")
 
-
-
-# routes
+@app.get("/items", response_model=List[schemas.Item])
+async def get_items(db: AsyncSession = Depends(get_db)):
+    try:
+        query = select(models.Item)
+        result = await db.execute(query)
+        items = result.scalars().all()
+        return items
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/crawl")
 async def crawl(url_request: UrlRequest):
@@ -168,6 +169,7 @@ async def crawl(url_request: UrlRequest):
         
         # cleanse price string
         price = re.sub(r'[^\d,\.]', '', price)
+        price = sanitize_price_string(price)
 
         # Step 5: find currency
         currency_tag = soup.find('meta', attrs={'property': re.compile(r'currency', re.IGNORECASE)})

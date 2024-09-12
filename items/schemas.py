@@ -4,7 +4,7 @@ from pydantic import BaseModel
 class ItemBase(BaseModel):
     url: str
     product_name: str
-    price: str
+    price: float
     currency: str
 
 
